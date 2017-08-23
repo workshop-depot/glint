@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/dc0d/argify"
-	cnf "github.com/dc0d/cliche/tad/conf"
 	"github.com/urfave/cli"
 )
 
@@ -16,9 +15,9 @@ func main() {
 }
 
 func app() {
-	if err := cnf.LoadHCL(&conf); err != nil {
-		log.Println("warn:", err)
-	}
+	// if err := cnf.LoadHCL(&conf); err != nil {
+	// 	log.Println("warn:", err)
+	// }
 
 	app := cli.NewApp()
 
