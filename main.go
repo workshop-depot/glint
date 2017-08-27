@@ -53,3 +53,5 @@ func app() {
 		log.Fatalln("error:", err)
 	}
 }
+
+var conf struct{}
