@@ -88,8 +88,21 @@ func _studyCalls(
 	content string,
 	helperFunctionNames []string) (anyErrors bool) {
 	for _, vfn := range helperFunctionNames {
-		hrgx := regexp.MustCompile(vfn + "\\W")
-		all := hrgx.FindAllString(content, -1)
+		hrgx := regexp.MustCompile("(?P<func_name>" + vfn + ")\\W")
+		matches := hrgx.FindStringSubmatch(content)
+		var all []string
+		strmatches := make(map[string]string)
+		for k, v := range hrgx.SubexpNames() {
+			if v == "" || len(matches) <= k {
+				continue
+			}
+			strmatches[v] = matches[k]
+		}
+		for _, v := range strmatches {
+			for i := 0; i < strings.Count(content, v); i++ {
+				all = append(all, v)
+			}
+		}
 
 		expected, actual := _listCalls(rgx, all)
 
@@ -98,7 +111,7 @@ func _studyCalls(
 			if v == expected[k] {
 				continue
 			}
-			fmt.Fprintf(buf, "% -18v actual calls: % 3d expected calls: % 3d \n", k+"...)", v, expected[k])
+			fmt.Fprintf(buf, "% -18v actual calls: % 3d expected calls: % 3d \n", k+"(...)", v, expected[k])
 			anyErrors = true
 		}
 	}
