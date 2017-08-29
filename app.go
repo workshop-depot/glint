@@ -94,7 +94,26 @@ func _helperCalls(pkgData map[string][]string) map[string]struct {
 		count int
 		pkg   string
 	})
+
+	hm := make(map[string]struct{})
+	fm := make(map[string]struct{})
 	for file, helpers := range pkgData {
+		fm[file] = struct{}{}
+		for _, fn := range helpers {
+			hm[fn] = struct{}{}
+		}
+	}
+
+	var helpers []string
+	for k := range hm {
+		helpers = append(helpers, k)
+	}
+	var files []string
+	for k := range fm {
+		files = append(files, k)
+	}
+
+	for _, file := range files {
 		b, err := ioutil.ReadFile(file)
 		if err != nil {
 			continue
@@ -144,11 +163,14 @@ func _fetchData(currentDir string) map[string]map[string][]string {
 			for _, vd := range vf.Decls {
 				if fn, isFn := vd.(*ast.FuncDecl); isFn {
 					fname := fmt.Sprint(fn.Name)
-					if !strings.HasPrefix(fname, "_") {
-						continue
-					}
+
 					if data[vp.Name] == nil {
 						data[vp.Name] = make(map[string][]string)
+					}
+					data[vp.Name][kf] = append(data[vp.Name][kf])
+
+					if !strings.HasPrefix(fname, "_") {
+						continue
 					}
 					data[vp.Name][kf] = append(data[vp.Name][kf], fname)
 				}
