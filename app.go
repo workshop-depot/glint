@@ -18,10 +18,7 @@ import (
 )
 
 func cmdHelpers(*cli.Context) error {
-	wd, err := os.Getwd()
-	if err != nil {
-		panic(err)
-	}
+	wd := _getwd()
 
 	buf := &bytes.Buffer{}
 	_forAllDirs(buf, wd)
@@ -41,7 +38,12 @@ func _forAllDirs(buf *bytes.Buffer, wd string) {
 		if strings.HasPrefix(f.Name(), ".") {
 			return filepath.SkipDir
 		}
-		_forDir(buf, path)
+
+		data := _fetchData(path)
+		for pkg, pkgData := range data {
+			_studyNames(buf, pkg, pkgData)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -49,86 +51,13 @@ func _forAllDirs(buf *bytes.Buffer, wd string) {
 	}
 }
 
-func _forDir(buf *bytes.Buffer, wd string) {
-	pkgs, err := _getPackages(wd)
-	if err != nil {
-		panic(err)
-	}
-
-	funcs := _extractFuncs(pkgs)
-	helperFunctionNames := _extractHelperNames(funcs)
-	sourceFiles, err := _listsourceFiles(wd)
-	if err != nil {
-		panic(err)
-	}
-
-	_writePkgInfo(wd, buf)
-	_study(buf, sourceFiles, helperFunctionNames)
-}
-
-func _study(buf *bytes.Buffer, sourceFiles, helperFunctionNames []string) {
-	anyErrors := false
-	rn := regexp.MustCompile("_\\d+")
-	for _, vsrc := range sourceFiles {
-		b, err := ioutil.ReadFile(vsrc)
-		if err != nil {
-			panic(err)
-		}
-
-		anyErrors = _studyCalls(buf, rn, string(b), helperFunctionNames) || anyErrors
-	}
-	if !anyErrors {
-		fmt.Fprintln(buf, "OK")
-	}
-}
-
-func _studyCalls(
-	buf *bytes.Buffer,
-	rgx *regexp.Regexp,
-	content string,
-	helperFunctionNames []string) (anyErrors bool) {
-	for _, vfn := range helperFunctionNames {
-		hrgx := regexp.MustCompile("(?P<func_name>" + vfn + ")\\W")
-		matches := hrgx.FindStringSubmatch(content)
-		var all []string
-		strmatches := make(map[string]string)
-		for k, v := range hrgx.SubexpNames() {
-			if v == "" || len(matches) <= k {
-				continue
-			}
-			strmatches[v] = matches[k]
-		}
-		for _, v := range strmatches {
-			for i := 0; i < strings.Count(content, v); i++ {
-				all = append(all, v)
-			}
-		}
-
-		expected, actual := _listCalls(rgx, all)
-
-		for k, v := range actual {
-			v := v - 1
-			if v == expected[k] {
-				continue
-			}
-			fmt.Fprintf(buf, "% -18v actual calls: % 3d expected calls: % 3d \n", k+"(...)", v, expected[k])
-			anyErrors = true
-		}
-	}
-	return
-}
-
-func _listCalls(rgx *regexp.Regexp, all []string) (expected, actual map[string]int) {
-	expected = make(map[string]int)
-	actual = make(map[string]int)
-	for _, v := range all {
-		v := strings.TrimSpace(v)
-		actual[v] = actual[v] + 1
-		_, ok := expected[v]
-		if ok {
-			continue
-		}
-		numbers := rgx.FindAllString(v, -1)
+func _studyNames(buf *bytes.Buffer, pkg string, pkgData map[string][]string) {
+	helperCalls := _helperCalls(pkgData)
+	rgx := regexp.MustCompile("_\\d+")
+	pkgErr := make(map[string][]string)
+	for k, v := range helperCalls {
+		pkgErr[v.pkg] = append(pkgErr[v.pkg])
+		numbers := rgx.FindAllString(k, -1)
 		var nstr = "1"
 		if len(numbers) > 0 {
 			nstr = strings.Replace(numbers[0], "_", "", -1)
@@ -137,64 +66,112 @@ func _listCalls(rgx *regexp.Regexp, all []string) (expected, actual map[string]i
 		if err != nil {
 			panic(err)
 		}
-		expected[v] = n
+		actual := v.count - 1
+		expected := n
+		if expected == actual {
+			continue
+		}
+		errstr := fmt.Sprintf("% -18v actual calls: % 3d expected calls: % 3d", k+"(...)", actual, expected)
+		pkgErr[v.pkg] = append(pkgErr[v.pkg], errstr)
 	}
-	return
+	for k, v := range pkgErr {
+		if len(v) == 0 {
+			fmt.Fprintf(buf, "%v %v\n", "OK", k)
+			continue
+		}
+		fmt.Fprintf(buf, "%v:\n", k)
+		for _, verr := range v {
+			fmt.Fprintf(buf, "%v\n", verr)
+		}
+	}
 }
 
-func _writePkgInfo(wd string, buf *bytes.Buffer) {
-	s := strings.Replace(wd, build.Default.GOPATH, "", -1)
+func _helperCalls(pkgData map[string][]string) map[string]struct {
+	count int
+	pkg   string
+} {
+	helperCalls := make(map[string]struct {
+		count int
+		pkg   string
+	})
+	for file, helpers := range pkgData {
+		b, err := ioutil.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		content := string(b)
+		for _, fn := range helpers {
+			hrgx := regexp.MustCompile("\\W(?P<" + funcGroupName + ">" + fn + ")\\W")
+			matches := hrgx.FindAllStringSubmatch(content, -1)
+
+			for _, v := range hrgx.SubexpNames() {
+				if v != funcGroupName {
+					continue
+				}
+				count := 0
+				for _, fcset := range matches {
+					for _, fc := range fcset {
+						if fc == fn {
+							count++
+						}
+					}
+				}
+
+				fitem := helperCalls[fn]
+				fitem.count += count
+				fitem.pkg = _pkgName(file)
+				helperCalls[fn] = fitem
+			}
+		}
+	}
+	return helperCalls
+}
+
+func _pkgName(d string) string {
+	s := strings.Replace(d, build.Default.GOPATH, "", -1)
 	s = strings.TrimPrefix(s, "/src/")
-	fmt.Fprintf(buf, "package: %s\n", s)
+	s = filepath.Dir(s)
+	return s
 }
 
-func _getPackages(dir string) (pkgs map[string]*ast.Package, err error) {
-	set := token.NewFileSet()
-	pkgs, err = parser.ParseDir(set, dir, nil, 0)
-	if err != nil {
-		return nil, err
-	}
-	return
-}
+const funcGroupName = "func_name"
 
-func _extractFuncs(pkgs map[string]*ast.Package) (funcs []*ast.FuncDecl) {
-	for _, pkg := range pkgs {
-		for _, f := range pkg.Files {
-			for _, d := range f.Decls {
-				if fn, isFn := d.(*ast.FuncDecl); isFn {
-					funcs = append(funcs, fn)
+func _fetchData(currentDir string) map[string]map[string][]string {
+	data := make(map[string]map[string][]string)
+	pkgSet := _fetchPackages(currentDir)
+	for _, vp := range pkgSet {
+		for kf, vf := range vp.Files {
+			for _, vd := range vf.Decls {
+				if fn, isFn := vd.(*ast.FuncDecl); isFn {
+					fname := fmt.Sprint(fn.Name)
+					if !strings.HasPrefix(fname, "_") {
+						continue
+					}
+					if data[vp.Name] == nil {
+						data[vp.Name] = make(map[string][]string)
+					}
+					data[vp.Name][kf] = append(data[vp.Name][kf], fname)
 				}
 			}
 		}
 	}
-	return
+	return data
 }
 
-func _extractHelperNames(funcs []*ast.FuncDecl) (fhp []string) {
-	for _, vf := range funcs {
-		fn := fmt.Sprint(vf.Name)
-		if !strings.HasPrefix(fn, "_") {
-			continue
-		}
-		fhp = append(fhp, fn)
-	}
-	return
-}
-
-func _listsourceFiles(wd string) (sourceFiles []string, err error) {
-	files, err := ioutil.ReadDir(wd)
+func _fetchPackages(dir string) (pkgs map[string]*ast.Package) {
+	set := token.NewFileSet()
+	var err error
+	pkgs, err = parser.ParseDir(set, dir, nil, 0)
 	if err != nil {
-		return nil, err
-	}
-	for _, vff := range files {
-		fn := vff.Name()
-		if filepath.HasPrefix(fn, ".") {
-			continue
-		}
-		if strings.ToLower(filepath.Ext(fn)) != ".go" {
-			continue
-		}
-		sourceFiles = append(sourceFiles, filepath.Join(wd, fn))
+		panic(err)
 	}
 	return
+}
+
+func _getwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	return wd
 }
